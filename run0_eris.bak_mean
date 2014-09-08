@@ -1,0 +1,162 @@
+"""
+run0_eris.py
+============
+
+Serves as first draft for getting peculiar velocity plots to Jo Bovy for paper.
+
+Note email dated 8/10/2014 from D. Weinberg
+"""
+
+from __future__ import print_function
+import config
+import sim_tools as st
+import survey_sims as ss
+import numpy as np
+import simtopandas as stp
+import pandas as pd
+import scipy
+import pynbody
+from scipy import interpolate as interpolate
+import matplotlib as mpl
+from matplotlib import pyplot as plt
+import decomp
+
+
+
+def gcCoords(obsDataDict, sunpos):
+    """
+    Function to calculate rectagular galacto-centric coordinates given l, b,
+    distance2d, distance3d.
+
+    obsDataDict is a dictionary object with the following keys:
+
+    'l', 'b', 'd2', 'd3'
+
+    Assume you want Sun at (xgc=8,ygc=0, zgc=0)
+
+    sunpos  a tuple or array (3d)
+    """
+    try:
+
+        xGC = obsDataDict['d2'] * np.cos(np.radians(obsDataDict['l']))
+        yGC = obsDataDict['d2'] * np.sin(np.radians(obsDataDict['l']))
+        zGC = obsDataDict['d3'] * np.sin(np.radians(obsDataDict['b']))
+
+        return (np.vstack([8.0 - xGC, yGC, zGC])).transpose()
+
+    except KeyError:
+        print("Data missing from Dictionary.\nMake sure object has l,b,d2,d3 with correct naming.")
+
+originalsim = st.load_faceon(400, config.params)
+## Let's just look at subSim centered on disk
+decomp.decomp(originalsim, config)
+#sim = originalsim[pynbody.filt.Disc('17 kpc', '0.5 kpc') & pynbody.filt.LowPass('tform', 10.0)]
+sim = originalsim[pynbody.filt.Disc('17 kpc', '0.5 kpc') & pynbody.filt.LowPass('decomp', 1.5)]
+#rint(pynbody.analysis.angmom.ang_mom_vec(sim))
+#pynbody.analysis.angmom.faceon(sim)
+#print(pynbody.analysis.angmom.ang_mom_vec(sim))
+
+#2D velocities
+sim['vcxy']
+sim['vrxy']
+
+#osim = ss.ObsSim(sim, 5.565,5.565)
+osim = ss.ObsSim(sim, 8.0, 0.0)
+
+obsdata = ss.lbdrv(sim['pos'], sim['vel'], osim.sunpos)
+galCoords = gcCoords(obsdata, osim.sunpos)
+
+gcDict = {i:galCoords[:,j] for (j,i) in enumerate(['xgc', 'ygc', 'zgc'])}
+##pynSim = stp.SimPynbody(sim, sid=400)
+##dfSim = stp.sim2df(pynSim)
+
+#dfObsdata = pd.DataFrame(obsdata)
+#dfGalcoords = pd.DataFrame(galCoords)
+
+#d = [obsdata,gcDict]
+dfObsDataCoords = pd.DataFrame(obsdata)
+for i in gcDict.keys():
+    dfObsDataCoords[i] = pd.Series(gcDict[i], index=dfObsDataCoords.index)
+
+extentx = [-15.0,15.0]
+extenty = [-15.0,15.0]
+###extentx = [5.0,12.5]
+###extenty = [-3.0,4.0]
+nbinsx,nbinsy = 40,40
+###nbinsx,nbinsy = 15,14
+binsx = np.arange(extentx[0], extentx[1]+0.001, (extentx[1]-extentx[0])/nbinsx)
+binsy = np.arange(extenty[0], extenty[1]+0.001, (extenty[1]-extenty[0])/nbinsy)
+
+#Zcut in GC coords, also needed for original sim for GC vels
+decomp.decomp(sim, config)  # Disk and Thick disk are 1 and 2
+#dfzcut = dfObsDataCoords[(np.abs(dfObsDataCoords.zgc) < 0.25)]
+#ubSim = sim[np.asarray(np.abs(dfObsDataCoords.zgc) < 0.25)]
+dfzcut = dfObsDataCoords[(np.abs(sim['z']) < 0.25)]
+subSim = sim[np.asarray(np.abs(sim['z']) < 0.25)]
+#dfzcut = dfObsDataCoords[(np.abs(dfObsDataCoords.zgc) < 0.25) & (sim.s['decomp']<1.5)]
+#subSim = sim[np.asarray(np.abs(dfObsDataCoords.zgc) < 0.25) & (sim.s['decomp']<1.5)]
+
+#Need to decide if Vr and vt should be mass averaged or not; for now, yes, so
+#use pynbody; otherwise can use pandas to do a straight number average
+
+# We need to make the cuts for disk stars only. Halo stars only have low Vc and therefore make a very non-gaussian tail
+
+radprofileSim = pynbody.analysis.profile.Profile(subSim, min=0.00, max=16.5, nbins=45)
+vcxyRfit = interpolate.InterpolatedUnivariateSpline(radprofileSim['rbins'], radprofileSim['vcxy'])
+vrxyRfit = interpolate.InterpolatedUnivariateSpline(radprofileSim['rbins'], radprofileSim['vrxy'])
+
+##rcfile = np.load('stargasdm.rotcurve.00400.npz')
+##rad = rcfile['radius']
+##vc = rcfile['jz_max']/rcfile['radius']
+
+##radVcFit = interpolate.InterpolatedUnivariateSpline(rad[1:],vc[1:])
+rgc = np.sqrt(dfzcut.xgc**2 + dfzcut.ygc**2)
+dfzcut['rgc'] = pd.Series(np.asarray(rgc), index = dfzcut.index)
+
+
+deltaVr = subSim['vrxy'] - vrxyRfit(rgc)
+deltaVt = subSim['vcxy'] - vcxyRfit(rgc)
+
+
+#deltaV = dfzcut.rv/np.cos(np.radians(dfzcut.b)) - vcDerived*np.sin(np.radians(dfzcut.l + dfzcut.az)) 
+histres = np.histogram2d(np.asarray(dfzcut.xgc), np.asarray(dfzcut.ygc), bins=[binsx,binsy], range=[extentx, extenty])
+hist1d = np.ravel(histres[0])
+emptybinMask = hist1d == 0   # where are there NO stars, can later update for minimum star #
+
+dfzcut['deltaVr'] = pd.Series(np.asarray(deltaVr), index = dfzcut.index)
+dfzcut['deltaVt'] = pd.Series(np.asarray(deltaVt), index = dfzcut.index)
+
+binned = dfzcut.groupby([pd.cut(dfzcut.xgc, binsx), pd.cut(dfzcut.ygc, binsy)])
+medDeltaVr = binned.median().deltaVr
+medDeltaVt = binned.median().deltaVt
+
+
+hist1d[emptybinMask] = np.nan # set the emptpy bins not to be plotted
+hist1d[~emptybinMask] = np.asarray(medDeltaVr)
+
+minmax_cm = 24 #N used for vmax, vmin
+deltaVmap = hist1d.reshape(nbinsx,nbinsy)
+fig = plt.figure()
+ax = fig.add_subplot(111)
+im = ax.imshow(deltaVmap.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap='Spectral', origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
+
+plt.colorbar(im)
+plt.savefig('vrmap.png', format='png')
+
+
+hist1d[~emptybinMask] = np.asarray(medDeltaVt)
+deltaV2map = hist1d.reshape(nbinsx,nbinsy)
+
+fig2 = plt.figure()
+ax2 = fig2.add_subplot(111)
+im2 = ax2.imshow(deltaV2map.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap='Spectral', origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
+
+plt.colorbar(im2)
+
+plt.savefig('vtmap.png', format='png')
+#plt.show()
+
+
+
+
+

@@ -1,0 +1,11 @@
+rotated_simsnaps
+*.aux
+*.log
+*.ps
+*.fls
+*.blg
+*.un~
+*.swp
+*.pyc
+*.fdb_latexmk
+
