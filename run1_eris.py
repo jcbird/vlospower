@@ -21,7 +21,7 @@ import pynbody
 from scipy import interpolate as interpolate
 from matplotlib import pyplot as plt
 import pyfits
-#import decomp
+import decomp
 import sys
 
 
@@ -59,12 +59,15 @@ def gcCoords(obsDataDict, sim, sunpos):
         print("Data missing from Dictionary.\nMake sure object has l,b,d2,d3 with correct naming.")
 
 originalsim = st.load_faceon(400, config.params)
-## Let's just look at subSim centered on disk
-tmin = (originalsim['tform']>9.3) 
-tmax = (originalsim['tform']<12.32)
 radmax = (originalsim['r']<40.0)
+#Making copy of sim to compute rotation curve later
+decomp.decomp(originalsim, config)
+dcvals = (originalsim['decomp']==1) #just picking up thin disk right now
+rotcurve_sim = originalsim.__deepcopy__()[radmax & dcvals]
+## Let's just look at subSim centered on disk
+tmin = (originalsim['tform']>10.3)
+tmax = (originalsim['tform']<12.82)
 subs = originalsim.__deepcopy__()[tmin & tmax & radmax ]
-#subs = originalsim.__deepcopy__()[(originalsim['r']<40.0)]
 cpos = pynbody.analysis.halo.hybrid_center(subs, r='12 kpc')
 subs['pos']-=cpos
 vcen = pynbody.analysis.halo.vel_center(subs, retcen=True, cen_size='29 kpc')
@@ -84,16 +87,29 @@ for i in gcDict.keys():
     dfObsDataCoords[i] = pd.Series(gcDict[i], index=dfObsDataCoords.index)
 
 #MIDPLANE for simulation and observed data
-dfzcut = dfObsDataCoords[(np.abs(sim['z']) < 0.25)] #& (np.abs(np.asarray(dfObsDataCoords['b']))<1.5)]
-subSim = sim[np.asarray(np.abs(sim['z']) < 0.25)] #& (np.abs(np.asarray(dfObsDataCoords['b']))<1.5)]
+dfzcut = dfObsDataCoords[(np.abs(sim['z']) < 0.25) & (np.abs(np.asarray(dfObsDataCoords['b']))<1.5)]
+subSim = sim[np.asarray(np.abs(sim['z']) < 0.25) & (np.abs(np.asarray(dfObsDataCoords['b']))<1.5)]
+
+#Above is for the mock RC samplem, below we include all 'thin disk' stars to
+#pick up the median(or pehaps, mean) rotation velocity of the disk
+#applying same rotation/translation of RC sample to full think disk sample
+
+rotcurve_sim['pos'] -= cpos
+rotcurve_sim['vel'] -= vcen
+pynbody.transformation.transform(rotcurve_sim, trans)
+rc_sim = rotcurve_sim[pynbody.filt.Disc('17 kpc', '0.25 kpc')]
+rc_osim = ss.ObsSim(rc_sim, 0.0,-8.0)
+rc_obsdata = ss.lbdrv(rc_sim['pos'], rc_sim['vel'], rc_osim.sunpos)
 
 #BUILD UP ROTATION CURVE
-galcutout_rotcuve = (np.asarray(dfzcut['l'])>30.0) & (np.asarray(dfzcut['l'])<210.0) \
-        & (np.asarray(dfzcut['d2'])<5.0) & (np.abs(np.asarray(dfzcut['b']))<1.5)
+galcutout_rotcuve = (np.asarray(rc_obsdata['l'])>30.0) & (np.asarray(rc_obsdata['l'])<230.0) \
+        & (np.asarray(rc_obsdata['d2'])<5.0) & (np.abs(np.asarray(rc_obsdata['b']))<1.5)
 
+galcutout_rotcuve = (np.asarray(rc_obsdata['l'])>30.0) & (np.asarray(rc_obsdata['l'])<210.0) \
+        & (np.asarray(rc_obsdata['d2'])<5.0)
 
 #Divide galaxy cutouf into bins
-sim_rotcurve = subSim[galcutout_rotcuve]
+sim_rotcurve = rc_sim[galcutout_rotcuve]
 
 radbins = np.linspace(4.0,16.5,25)
 radinds = np.digitize(sim_rotcurve['rxy'], radbins)
@@ -102,6 +118,8 @@ uniqueinds = range(1,len(radbins)) #avoids last and first bins
 
 medvcxy = np.array([np.median(sim_rotcurve['vcxy'][(radinds==radialID)]) for radialID in uniqueinds]) 
 medvrxy = np.array([np.median(sim_rotcurve['vrxy'][(radinds==radialID)]) for radialID in uniqueinds]) 
+#medvcxy = np.array([np.mean(sim_rotcurve['vcxy'][(radinds==radialID)]) for radialID in uniqueinds]) 
+#medvrxy = np.array([np.mean(sim_rotcurve['vrxy'][(radinds==radialID)]) for radialID in uniqueinds]) 
 radmask = ~np.isnan(medvcxy)
 
 vcxyRfit = interpolate.InterpolatedUnivariateSpline(rbins[radmask], medvcxy[radmask])
@@ -130,8 +148,8 @@ rgc = subSim['rxy']
 dfzcut['rgc'] = pd.Series(np.asarray(rgc), index = dfzcut.index)
 deltaVr = subSim['vrxy'] - vrxyRfit(subSim['rxy'])
 deltaVt = subSim['vcxy'] - vcxyRfit(subSim['rxy'])
-####deltaVlos = dfzcut['rv']/np.cos(np.radians(dfzcut.b)) - (vrxyRfit(rgc)*np.cos(np.pi - np.radians(dfzcut.l + dfzcut.az)) + vcxyRfit(rgc)*np.sin(np.radians(dfzcut.l + dfzcut.az)))
-deltaVlos = dfzcut['rv']/np.cos(np.radians(dfzcut.b)) - (vrxyRfit(subSim['rxy'])*np.cos(np.pi - np.radians(dfzcut.l + dfzcut.az)) - vcxyRfit(subSim['rxy'])*np.sin(np.radians(dfzcut.l + dfzcut.az)))
+deltaVlos = dfzcut['rv']/np.cos(np.radians(dfzcut.b)) - (vrxyRfit(rgc)*np.cos(np.pi - np.radians(dfzcut.l + dfzcut.az)) + vcxyRfit(rgc)*np.sin(np.radians(dfzcut.l + dfzcut.az)))
+#deltaVlos = dfzcut['rv']/np.cos(np.radians(dfzcut.b)) - (vrxyRfit(subSim['rxy'])*np.cos(np.pi - np.radians(dfzcut.l + dfzcut.az)) - vcxyRfit(subSim['rxy'])*np.sin(np.radians(dfzcut.l + dfzcut.az)))
 
 dfzcut['deltaVr'] = pd.Series(np.asarray(deltaVr), index = dfzcut.index)
 dfzcut['deltaVt'] = pd.Series(np.asarray(deltaVt), index = dfzcut.index)
@@ -166,65 +184,34 @@ cb = plt.colorbar(im)
 cb.set_label(r'median $\Delta\mathrm{V}_{\phi,\phi}$ [km/s]', fontsize = 'large')
 plotlabel(ax)
 plt.savefig('vt_map.png', format='png')
-sys.exit()
+del fig,ax
 
-hist1d[~emptybinMask] = np.asarray(medDeltaVt)
-deltaV2map = hist1d.reshape(nbinsx,nbinsy)
-
-fig2 = plt.figure()
-ax2 = fig2.add_subplot(111)
-im2 = ax2.imshow(deltaV2map.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap=cmapp, origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
-
-histres = np.histogram2d(np.asarray(subSim['x']), np.asarray(subSim['y']), bins=[binsx,binsy], range=[extentx, extenty])
-hist1d = np.ravel(histres[0])
-emptybinMask = hist1d == 0   # where are there NO stars, can later update for minimum star #
-
-
-
-
-hist1d[emptybinMask] = np.nan # set the emptpy bins not to be plotted
-hist1d[~emptybinMask] = np.asarray(medDeltaVr)
-
-
-minmax_cm = 16 #N used for vmax, vmin
-cmapp = 'Spectral'
-deltaVmap = hist1d.reshape(nbinsx,nbinsy)
+#DeltaVr
 fig = plt.figure()
 ax = fig.add_subplot(111)
-im = ax.imshow(deltaVmap.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap=cmapp, origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
+deltaV = medDeltaVr.reshape(histshape)
+deltaV[rcmask] = np.nan
+im = ax.imshow(deltaV.T, aspect='auto',  interpolation='none', \
+        extent=[rangex[0], rangex[1], rangey[0], rangey[1]], cmap=cmapp, \
+        origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
  
 cb = plt.colorbar(im)
 cb.set_label(r'median $\Delta\mathrm{V}_{\mathrm{r,r}}$ [km/s]', fontsize = 'large')
 plotlabel(ax)
-plt.savefig('vrmap.png', format='png')
+plt.savefig('vr_map.png', format='png')
+del fig,ax
 
-
-hist1d[~emptybinMask] = np.asarray(medDeltaVt)
-deltaV2map = hist1d.reshape(nbinsx,nbinsy)
-
-fig2 = plt.figure()
-ax2 = fig2.add_subplot(111)
-im2 = ax2.imshow(deltaV2map.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap=cmapp, origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
-
-cb2 = plt.colorbar(im2)
-
-cb2.set_label(r'median $\Delta\mathrm{V}_{\phi,\phi}$ [km/s]', fontsize = 'large')
-plotlabel(ax2)
-plt.savefig('vtmap.png', format='png')
-#plt.show()
-
-hist1d[~emptybinMask] = np.asarray(medDeltaVlos)
-deltaV3map = hist1d.reshape(nbinsx,nbinsy)
-
-fig3 = plt.figure()
-ax3 = fig3.add_subplot(111)
-im3 = ax3.imshow(deltaV3map.T, aspect='auto',  interpolation='none', extent=[extentx[0], extentx[1], extenty[0], extenty[1]], cmap=cmapp, origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
-
-cb3 = plt.colorbar(im3)
-
-cb3.set_label(r'median $\Delta\mathrm{V}_{\mathrm{los}, \phi; \mathrm{r}}$ [km/s]', fontsize = 'large')
-plotlabel(ax3)
-plt.savefig('vlosmap.png', format='png')
-#plt.show()
-
-
+#DeltaVlos
+fig = plt.figure()
+ax = fig.add_subplot(111)
+deltaV = medDeltaVlos.reshape(histshape)
+deltaV[rcmask] = np.nan
+im = ax.imshow(deltaV.T, aspect='auto',  interpolation='none', \
+        extent=[rangex[0], rangex[1], rangey[0], rangey[1]], cmap=cmapp, \
+        origin='lower', vmax=minmax_cm, vmin=-minmax_cm)
+ 
+cb = plt.colorbar(im)
+cb.set_label(r'median $\Delta\mathrm{V}_{\mathrm{los}, \phi; \mathrm{r}}$ [km/s]', fontsize = 'large')
+plotlabel(ax)
+plt.savefig('vlos_map.png', format='png')
+del fig,ax
